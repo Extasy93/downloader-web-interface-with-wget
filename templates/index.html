@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Interface de Téléchargement</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: {
+              50: '#f5f3ff',
+              100: '#ede9fe',
+              200: '#ddd6fe',
+              300: '#c4b5fd',
+              400: '#a78bfa',
+              500: '#8b5cf6',
+              600: '#7c3aed',
+              700: '#6d28d9',
+              800: '#5b21b6',
+              900: '#4c1d95',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+
+<body class="bg-gray-900 min-h-screen text-gray-100">
+  {% if not password_ok %}
+  <div class="fixed inset-0 flex items-center justify-center">
+    <div class="bg-gray-800/50 backdrop-blur-lg p-8 rounded-xl shadow-2xl border border-gray-700/50 w-full max-w-md">
+      <form method="POST" class="space-y-4">
+        <input type="password" name="password" placeholder="Mot de passe" required
+          class="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent">
+        <button type="submit"
+          class="w-full px-4 py-3 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors duration-200 font-medium">
+          Se connecter
+        </button>
+        {% if error %}
+        <div class="text-red-400 text-sm text-center">{{ error }}</div>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+  {% else %}
+  <div class="container mx-auto px-4 py-8 max-w-4xl">
+    <!-- Contrôles -->
+    <div class="mb-8">
+      <div class="relative">
+        <button id="folderBtn"
+          class="w-full px-4 py-3 bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 rounded-lg text-left hover:bg-gray-800/70 transition-colors duration-200">
+          Choisir un dossier
+        </button>
+        <div id="fileTree"
+          class="hidden absolute z-50 w-full mt-2 bg-gray-800/95 backdrop-blur-lg border border-gray-700/50 rounded-lg shadow-xl">
+          <div id="backButton" class="hidden px-4 py-2 text-sm text-gray-400 hover:text-white cursor-pointer">◀ Retour
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Formulaire de téléchargement -->
+    <form id="downloadForm" class="space-y-4">
+      <textarea name="urls" id="urls" placeholder="Collez un lien par ligne" required
+        class="w-full px-4 py-3 bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent min-h-[100px] resize-y"></textarea>
+      <input type="hidden" name="folder" id="selectedPath">
+      <button type="submit"
+        class="w-full px-4 py-3 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors duration-200 font-medium">
+        Télécharger
+      </button>
+    </form>
+
+    <!-- Notifications -->
+    <div id="notificationContainer" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+    <!-- Feed des téléchargements -->
+    <div class="mt-12">
+      <div class="flex justify-between items-center mb-6">
+        <h2 class="text-2xl font-semibold">Feed des Téléchargements</h2>
+        <div class="flex space-x-4">
+          <div class="px-4 py-2 bg-yellow-600 rounded-lg">
+            <span class="font-medium">En cours : </span>
+            <span id="activeCount">0</span>
+          </div>
+          <div class="px-4 py-2 bg-green-600 rounded-lg">
+            <span class="font-medium">Terminés : </span>
+            <span id="completedCount">0</span>
+          </div>
+        </div>
+      </div>
+      <div id="feedContainer" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <script>
+    const fileTree = document.getElementById("fileTree");
+    const backBtn = document.getElementById("backButton");
+    const folderBtn = document.getElementById("folderBtn");
+    const selectedPath = document.getElementById("selectedPath");
+    const feedContainer = document.getElementById('feedContainer');
+    const socket = io({ withCredentials: true });
+
+    let treeData = [], stack = [], currentNodes = [];
+    let active_downloads = {}; // Ajout de la variable pour stocker les téléchargements actifs
+
+    // Toast basique avec durée augmentée
+    function notify(msg, type = 'info', dur = 8000) {
+      const n = document.createElement('div');
+      n.className = `px-4 py-3 rounded-lg shadow-lg transform transition-all duration-300 translate-x-full ${type === 'info' ? 'bg-primary-600' :
+        type === 'success' ? 'bg-green-600' :
+          'bg-red-600'
+        }`;
+      n.textContent = msg;
+      document.getElementById('notificationContainer').appendChild(n);
+      setTimeout(() => n.classList.remove('translate-x-full'), 10);
+      setTimeout(() => n.classList.add('translate-x-full'), dur);
+      setTimeout(() => n.remove(), dur + 300);
+    }
+
+    // Dropdown dossiers
+    function createFolderElement(folder) {
+      const item = document.createElement('div');
+      item.className = 'px-4 py-2 hover:bg-gray-700/50 cursor-pointer transition-colors duration-200';
+      item.textContent = folder.name;
+      item.addEventListener('click', e => {
+        e.stopPropagation();
+        if (folder.children && folder.children.length) {
+          stack.push(currentNodes);
+          currentNodes = folder.children;
+          renderTree(currentNodes);
+          selectPath(folder.path);
+        } else {
+          selectPath(folder.path);
+          fileTree.classList.add('hidden');
+        }
+      });
+      return item;
+    }
+
+    function renderTree(nodes) {
+      backBtn.classList.toggle('hidden', !stack.length);
+      // Vider complètement le contenu du fileTree sauf le bouton retour
+      const backButton = fileTree.querySelector('#backButton');
+      fileTree.innerHTML = '';
+      if (backButton) {
+        fileTree.appendChild(backButton);
+      }
+      // Ajouter les nouveaux éléments
+      nodes.forEach(f => fileTree.appendChild(createFolderElement(f)));
+    }
+
+    function selectPath(path) {
+      selectedPath.value = path;
+      folderBtn.textContent = 'Dossier: ' + path;
+    }
+
+    function updateFileTree() {
+      fetch('/get_files', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+          treeData = data.files || [];
+          currentNodes = treeData;
+          renderTree(treeData);
+        })
+        .catch(() => fileTree.innerHTML = '<div class="px-4 py-2 text-red-400">Erreur de connexion</div>');
+    }
+
+    // Ouverture / fermeture dropdown
+    folderBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      fileTree.classList.toggle('hidden');
+    });
+    document.addEventListener('click', e => {
+      if (!fileTree.contains(e.target) && e.target !== folderBtn) {
+        fileTree.classList.add('hidden');
+      }
+    });
+    backBtn.addEventListener('click', () => {
+      currentNodes = stack.pop() || treeData;
+      renderTree(currentNodes);
+    });
+
+    updateFileTree();
+
+    function updateFeedItem(id, data) {
+      let item = document.getElementById(`feed-${id}`);
+      if (!item) {
+        item = document.createElement('div');
+        item.id = `feed-${id}`;
+        item.className = 'bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 rounded-lg p-4 transition-all duration-200 hover:bg-gray-800/70';
+        feedContainer.insertBefore(item, feedContainer.firstChild);
+      }
+
+      const statusClass = {
+        'starting': 'bg-primary-600',
+        'downloading': 'bg-yellow-600',
+        'completed': 'bg-green-600'
+      }[data.status];
+
+      const statusText = {
+        'starting': 'Démarrage',
+        'downloading': 'En cours',
+        'completed': 'Terminé'
+      }[data.status];
+
+      const date = new Date(data.timestamp);
+      const formattedDate = date.toLocaleString();
+
+      item.innerHTML = `
+        <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-3 gap-2">
+          <div class="flex items-center gap-2">
+            <span class="font-medium break-all">${data.filename}</span>
+            <span class="px-3 py-1 rounded-full text-sm ${statusClass}">${statusText}</span>
+          </div>
+          <span class="text-gray-400 text-sm">${formattedDate}</span>
+        </div>
+        ${data.status !== 'completed' ? `
+          <div class="h-2 bg-gray-700/50 rounded-full overflow-hidden mb-3">
+            <div class="h-full bg-primary-600 transition-all duration-300" style="width: ${data.progress}%"></div>
+          </div>
+        ` : ''}
+        <div class="text-gray-400 text-sm">${data.folder}</div>
+      `;
+
+      if (data.status === 'completed') {
+        item.classList.add('opacity-70');
+      }
+
+      // Mettre à jour les compteurs
+      updateCounters();
+    }
+
+    function updateCounters() {
+      const activeCount = Object.values(active_downloads).filter(d => d.status !== 'completed').length;
+      const completedCount = Object.values(active_downloads).filter(d => d.status === 'completed').length;
+
+      document.getElementById('activeCount').textContent = activeCount;
+      document.getElementById('completedCount').textContent = completedCount;
+    }
+
+    // Charger l'historique au démarrage
+    function loadHistory() {
+      fetch('/get_history')
+        .then(r => r.json())
+        .then(data => {
+          // Vider le conteneur avant de charger l'historique
+          feedContainer.innerHTML = '';
+          // Trier l'historique par date de fin (plus récent en premier)
+          const sortedHistory = data.history.sort((a, b) =>
+            new Date(b.timestamp) - new Date(a.timestamp)
+          );
+          // Limiter à 15 éléments
+          sortedHistory.slice(0, 15).forEach(item => {
+            updateFeedItem(item.timestamp, {
+              ...item,
+              progress: 100
+            });
+          });
+          updateCounters();
+        });
+    }
+
+    loadHistory();
+
+    socket.on('feed_update', (data) => {
+      // Mettre à jour les téléchargements actifs
+      active_downloads = data.downloads;
+
+      // Vider le conteneur
+      feedContainer.innerHTML = '';
+
+      // Trier tous les téléchargements par date (plus récent en premier)
+      const allDownloads = Object.entries(active_downloads)
+        .map(([id, data]) => ({ id, ...data }))
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      // Afficher les téléchargements en cours en premier
+      const activeDownloads = allDownloads.filter(d => d.status !== 'completed');
+      activeDownloads.forEach(download => {
+        const item = document.createElement('div');
+        item.id = `feed-${download.id}`;
+        item.className = 'bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 rounded-lg p-4 transition-all duration-200 hover:bg-gray-800/70';
+
+        const statusClass = {
+          'starting': 'bg-primary-600',
+          'downloading': 'bg-yellow-600',
+          'completed': 'bg-green-600'
+        }[download.status];
+
+        const statusText = {
+          'starting': 'Démarrage',
+          'downloading': 'En cours',
+          'completed': 'Terminé'
+        }[download.status];
+
+        const date = new Date(download.timestamp);
+        const formattedDate = date.toLocaleString();
+
+        item.innerHTML = `
+          <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-3 gap-2">
+            <span class="font-medium break-all">${download.filename}</span>
+            <div class="flex items-center gap-2 sm:ml-4">
+              <span class="text-gray-400 text-sm">${formattedDate}</span>
+              <span class="px-3 py-1 rounded-full text-sm ${statusClass}">${statusText}</span>
+            </div>
+          </div>
+          ${download.status !== 'completed' ? `
+            <div class="h-2 bg-gray-700/50 rounded-full overflow-hidden mb-3">
+              <div class="h-full bg-primary-600 transition-all duration-300" style="width: ${download.progress}%"></div>
+            </div>
+          ` : ''}
+          <div class="text-gray-400 text-sm">${download.folder}</div>
+        `;
+
+        if (download.status === 'completed') {
+          item.classList.add('opacity-70');
+        }
+
+        feedContainer.appendChild(item);
+      });
+
+      // Puis afficher les téléchargements terminés (limité à 15)
+      const completedDownloads = allDownloads
+        .filter(d => d.status === 'completed')
+        .slice(0, 15);
+      completedDownloads.forEach(download => {
+        const item = document.createElement('div');
+        item.id = `feed-${download.id}`;
+        item.className = 'bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 rounded-lg p-4 transition-all duration-200 hover:bg-gray-800/70 opacity-70';
+
+        const date = new Date(download.timestamp);
+        const formattedDate = date.toLocaleString();
+
+        item.innerHTML = `
+          <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-3 gap-2">
+            <span class="font-medium break-all">${download.filename}</span>
+            <div class="flex items-center gap-2 sm:ml-4">
+              <span class="text-gray-400 text-sm">${formattedDate}</span>
+              <span class="px-3 py-1 rounded-full text-sm bg-green-600">Terminé</span>
+            </div>
+          </div>
+          <div class="text-gray-400 text-sm">${download.folder}</div>
+        `;
+
+        feedContainer.appendChild(item);
+      });
+
+      updateCounters();
+    });
+
+    // Gestionnaire de téléchargements
+    document.getElementById('downloadForm').addEventListener('submit', e => {
+      e.preventDefault();
+      const urls = document.getElementById('urls').value.trim().split('\n').filter(Boolean);
+      const folder = selectedPath.value;
+      if (!folder) return notify('Choisissez un dossier', 'error');
+
+      urls.forEach(url => {
+        const filename = url.split('/').pop();
+        notify('Démarrage : ' + filename, 'info');
+        fetch('/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ url, folder }),
+          credentials: 'include'
+        }).then(async r => {
+          if (!r.ok) {
+            if (r.status === 409) {
+              notify('Téléchargement déjà en cours pour ' + filename, 'error');
+            } else {
+              const data = await r.json().catch(() => ({}));
+              notify(data.error || 'Erreur lors du téléchargement', 'error');
+            }
+          }
+        });
+      });
+    });
+  </script>
+  {% endif %}
+</body>
+
+</html>

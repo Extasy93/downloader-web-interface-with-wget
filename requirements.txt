@@ -1,0 +1,8 @@
+Flask
+Flask-SocketIO
+eventlet
+requests
+python-dotenv
+greenlet>=1.0
+gunicorn
+beautifulsoup4
