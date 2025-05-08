@@ -23,6 +23,11 @@
 
 ---
 
+![Aperçu du mot de passe](password.png)
+![Aperçu de l'interface](interface.png)
+
+---
+
 ## Installation & Déploiement
 
 ### 1. Cloner le dépôt
