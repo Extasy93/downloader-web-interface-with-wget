@@ -41,13 +41,6 @@ Variables nécessaires :
 - `FLASK_SECRET_KEY` : Clé secrète Flask (générer une chaîne aléatoire)
 - `DISCORD_WEBHOOK_URL` : (optionnel) URL du webhook Discord pour notifications
 
-Exemple de fichier `.env` (à ne jamais versionner) :
-```env
-APP_PASSWORD=monSuperMotDePasse
-FLASK_SECRET_KEY=une_chaine_secrete
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-```
-
 ### 3. Déploiement avec Docker
 
 ```bash
